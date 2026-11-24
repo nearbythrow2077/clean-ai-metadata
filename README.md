@@ -6,7 +6,7 @@ Keep both scripts together. The wrapper recursively processes DOCX, PPTX, JPEG, 
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-lxml libimage-exiftool-perl unzip zip
+sudo apt install python3 python3-lxml python3-pil libimage-exiftool-perl unzip zip
 chmod +x clean_ai_metadata.sh
 exiftool -ver
 ```
@@ -39,7 +39,7 @@ MagicDispel rebuilds a same-format copy using the image data and checks the resu
 
 ## Verification
 
-Each success line lists cleared fields, Unicode removals, images cleaned, and the C2PA/JUMBF result. For Office files the helper reopens the completed ZIP, tests every CRC, compares the part inventory and content types, checks the main document relationship, checks the property fields, and reads each target image back from the ZIP. Image checks query both the raw JUMBF block and its decoded tags. An image-free package reports C2PA verification as inapplicable. A failure gives a nonzero exit status. Other verified files in the batch are retained.
+Each success line lists cleared fields, Unicode removals, images cleaned, and the C2PA/JUMBF result. For Office files the helper reopens the completed ZIP, tests every CRC, compares the part inventory and content types, checks the main document relationship, checks the property fields, and reads each target image back from the ZIP. Pillow compares decoded pixels and transparency for every frame before and after cleaning. For JPEGs with a JFIF header the cleaner rebuilds a minimal header with its original density, omitting thumbnails. Some Office viewers display a black rectangle when this header disappears. Image checks query both the raw JUMBF block and its decoded tags. An image-free package reports C2PA verification as inapplicable. A failure gives a nonzero exit status. Other verified files in the batch are retained.
 
 To spot-check a result, run the following from the directory containing the cleaned files. The two JUMBF queries should produce no output. Use the actual member name from `unzip -Z1` for the embedded image.
 

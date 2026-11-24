@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -25,6 +26,12 @@ try:
     from lxml import etree
 except ImportError:
     sys.exit("Missing lxml for python3. Install with sudo apt install python3-lxml")
+
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit("Missing Pillow for python3. Install with sudo apt install python3-pil")
 
 
 class Failure(Exception):
@@ -125,8 +132,31 @@ def check_image(path):
     return row
 
 
+def decoded_frames(path):
+    """Fingerprint each complete frame, including displayed palette colors and alpha."""
+    frames = []
+    try:
+        with Image.open(path) as im:
+            for frame in range(getattr(im, "n_frames", 1)):
+                im.seek(frame)
+                im.load()
+                # Retain high precision and all four ink channels for these formats.
+                mode = im.mode if im.mode in {"CMYK", "I", "F"} or im.mode.startswith("I;16") else "RGBA"
+                digest = hashlib.sha256()
+                for top in range(0, im.height, 128):
+                    strip = im.crop((0, top, im.width, min(top + 128, im.height)))
+                    if strip.mode != mode:
+                        strip = strip.convert(mode)
+                    digest.update(strip.tobytes())
+                frames.append((im.size, mode, digest.digest()))
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError) as exc:
+        raise Failure(f"could not decode image for pixel comparison: {exc}") from exc
+    return frames
+
+
 def clean_image(path, magic, report):
     before = tags(path)
+    original_frames = decoded_frames(path)
     if magic:
         command(["magicdispel", str(path)])
         copies = list(path.parent.glob(path.stem + "_clean.*"))
@@ -134,13 +164,28 @@ def clean_image(path, magic, report):
             raise Failure("MagicDispel did not produce one same-format clean copy")
         os.replace(copies[0], path)
     is_tiff = IMAGE[path.suffix] == "TIFF"
-    exif("-all=", "-overwrite_original", str(path), tiff_all=is_tiff)
+    jfif_fields = ("JFIF:ResolutionUnit", "JFIF:XResolution", "JFIF:YResolution")
+    has_jfif = IMAGE[path.suffix] == "JPEG" and "JFIF:JFIFVersion" in before
+    write_args = ["-all="]
+    if has_jfif:
+        # Rebuild a minimal JFIF APP0 marker. A markerless JPEG can decode
+        # correctly but display as a black rectangle in an Office application.
+        # Copy only numeric density fields, never the original thumbnail.
+        if any(not isinstance(before.get(k), int) for k in jfif_fields):
+            raise Failure("incomplete or invalid JPEG display density")
+        write_args.extend(f"-{key}#={before[key]}" for key in jfif_fields)
+    exif(*write_args, "-overwrite_original", str(path), tiff_all=is_tiff)
     if is_tiff:
         extra = sorted(private_tiff_tags(before))
         if extra:
             exif(*(f"-{key}=" for key in extra), "-overwrite_original", str(path))
     exif("-jumbf:all=", "-overwrite_original", str(path))
     after = check_image(path)
+    if has_jfif and ("JFIF:JFIFVersion" not in after or
+                     any(before[k] != after.get(k) for k in jfif_fields)):
+        raise Failure("JPEG lost its JFIF header or display density")
+    if decoded_frames(path) != original_frames:
+        raise Failure("decoded image pixels or frame count changed")
     if not before.get("Composite:ImageSize") or before["Composite:ImageSize"] != after.get("Composite:ImageSize"):
         raise Failure("missing or changed image dimensions")
     if is_tiff:
